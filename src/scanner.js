@@ -1,0 +1,203 @@
+const fs = require('fs');
+const path = require('path');
+const { storage } = require('./storage');
+
+/**
+ * 检查文件是否应该被包含（基于后缀过滤）
+ * @param {string} filePath - 文件路径
+ * @param {Object} filterConfig - 过滤配置 {whitelist: [], blacklist: []}
+ * @returns {boolean} - 是否应该包含该文件
+ */
+function shouldIncludeFile(filePath, filterConfig = {}) {
+  const ext = path.extname(filePath).toLowerCase();
+  
+  // 如果没有配置任何过滤规则，则包含所有文件
+  if (!filterConfig.whitelist || filterConfig.whitelist.length === 0) {
+    if (!filterConfig.blacklist || filterConfig.blacklist.length === 0) {
+      return true;
+    }
+  }
+
+  // 如果有白名单，只包含白名单中的扩展名
+  if (filterConfig.whitelist && filterConfig.whitelist.length > 0) {
+    const normalizedWhitelist = filterConfig.whitelist.map(ext => 
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`
+    );
+    if (!normalizedWhitelist.includes(ext)) {
+      return false;
+    }
+  }
+
+  // 排除黑名单中的扩展名
+  if (filterConfig.blacklist && filterConfig.blacklist.length > 0) {
+    const normalizedBlacklist = filterConfig.blacklist.map(ext => 
+      ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`
+    );
+    if (normalizedBlacklist.includes(ext)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * 扫描目录并生成文件列表
+ * @param {string} dir - 要扫描的目录
+ * @param {string[]} excludePatterns - 要排除的模式
+ * @param {Object} fileExtensionFilter - 文件扩展名过滤配置
+ * @returns {string[]} - 文件全路径列表
+ */
+function scanDirectory(dir, excludePatterns = [], fileExtensionFilter = {}) {
+  const results = [];
+
+  try {
+    const items = fs.readdirSync(dir);
+
+    for (const item of items) {
+      // 检查是否应该排除
+      if (excludePatterns.some(pattern => item.includes(pattern))) {
+        continue;
+      }
+
+      const fullPath = path.join(dir, item);
+
+      try {
+        const stat = fs.statSync(fullPath);
+
+        if (stat.isDirectory()) {
+          // 递归扫描子目录
+          results.push(...scanDirectory(fullPath, excludePatterns, fileExtensionFilter));
+        } else {
+          // 检查文件扩展名过滤
+          if (shouldIncludeFile(fullPath, fileExtensionFilter)) {
+            results.push(fullPath);
+          }
+        }
+      } catch (err) {
+        // 跳过无法访问的文件/目录
+        console.warn(`无法访问：${fullPath} - ${err.message}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`无法读取目录：${dir} - ${err.message}`);
+  }
+
+  return results;
+}
+
+/**
+ * 生成目录树结构的 markdown
+ * @param {string} rootPath - 根路径
+ * @param {string[]} excludePatterns - 排除模式
+ * @returns {string} - markdown 格式字符串
+ */
+function generateMarkdownTree(rootPath, excludePatterns = []) {
+  let output = `# NAS 文件索引\n\n`;
+  output += `扫描时间：${new Date().toLocaleString('zh-CN')}\n`;
+  output += `根路径：${rootPath}\n\n`;
+  output += `---\n\n`;
+  output += `## 目录结构\n\n\`\`\`\n`;
+
+  function buildTree(dir, prefix = '') {
+    let result = '';
+
+    try {
+      const items = fs.readdirSync(dir);
+      const filtered = items.filter(item =>
+        !excludePatterns.some(pattern => item.includes(pattern))
+      );
+
+      filtered.forEach((item, index) => {
+        const isLast = index === filtered.length - 1;
+        const icon = isLast ? '└── ' : '├── ';
+        const fullPath = path.join(dir, item);
+
+        result += `${prefix}${icon}${item}\n`;
+
+        try {
+          if (fs.statSync(fullPath).isDirectory()) {
+            result += buildTree(fullPath, prefix + (isLast ? '    ' : '│   '));
+          }
+        } catch (err) {
+          // 忽略无法访问的目录
+        }
+      });
+    } catch (err) {
+      // 忽略无法读取的目录
+    }
+
+    return result;
+  }
+
+  const pathName = path.basename(rootPath) || rootPath;
+  output += `${pathName}/\n`;
+  output += buildTree(rootPath, '│   ');
+  output += `\`\`\`\n\n`;
+
+  return output;
+}
+
+/**
+ * 执行扫描并保存结果（使用 storage 模块）
+ * @param {string[]} scanPaths - 要扫描的路径列表
+ * @param {string} outputFile - 输出文件路径
+ * @param {string[]} excludePatterns - 排除模式
+ * @param {Object} fileExtensionFilter - 文件扩展名过滤配置
+ * @param {string} configDir - 配置目录路径（可选）
+ * @returns {Object} - 扫描结果
+ */
+function performScan(scanPaths, outputFile, excludePatterns = [], fileExtensionFilter = {}, configDir = null) {
+  let fullPath;
+  
+  if (path.isAbsolute(outputFile)) {
+    fullPath = outputFile;
+  } else if (configDir) {
+    fullPath = path.join(configDir, outputFile);
+  } else {
+    const userHome = process.env.USERPROFILE || process.env.HOME;
+    fullPath = path.join(userHome, outputFile);
+  }
+
+  // 确保输出目录存在
+  const outputDir = path.dirname(fullPath);
+  if (!fs.existsSync(outputDir)) {
+    fs.mkdirSync(outputDir, { recursive: true });
+  }
+
+  console.log(`开始扫描，路径：${scanPaths.join(', ')}`);
+
+  // 初始化 storage
+  storage.init(fullPath);
+
+  // 执行扫描，获取文件列表
+  const scanResults = [];
+  for (const scanPath of scanPaths) {
+    const files = scanDirectory(scanPath, excludePatterns, fileExtensionFilter);
+    scanResults.push({ path: scanPath, files });
+    console.log(`  ${scanPath}: ${files.length} 个文件`);
+  }
+
+  // 使用 storage 模块更新数据（包含本地分类）
+  const resultData = storage.updateFromScan(scanResults);
+
+  console.log(`扫描完成，结果已保存到：${fullPath}`);
+  console.log(`  总文件数：${resultData.meta.totalFiles}`);
+  console.log(`  总大小：${resultData.meta.totalSize}`);
+
+  return {
+    success: true,
+    timestamp: new Date().toISOString(),
+    results: scanResults,
+    outputFile: fullPath,
+    totalFiles: resultData.meta.totalFiles,
+    totalSize: resultData.meta.totalSize
+  };
+}
+
+module.exports = {
+  scanDirectory,
+  generateMarkdownTree,
+  performScan,
+  shouldIncludeFile
+};
