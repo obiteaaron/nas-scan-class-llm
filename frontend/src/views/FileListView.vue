@@ -17,6 +17,13 @@
         </select>
         <input class="input" v-model="search" placeholder="搜索文件..." @keyup.enter="loadFiles" style="width: 200px">
         <button class="btn btn-secondary btn-small" @click="loadFiles">搜索</button>
+        <button 
+          v-if="selectedFiles.length > 0" 
+          class="btn btn-primary btn-small" 
+          @click="showBatchTagger"
+        >
+          批量打标 ({{ selectedFiles.length }})
+        </button>
       </div>
 
       <div v-if="loading" class="loading">加载中...</div>
@@ -25,21 +32,42 @@
         <table class="table">
           <thead>
             <tr>
+              <th style="width: 30px">
+                <input type="checkbox" @change="toggleSelectAll($event)" :checked="isAllSelected">
+              </th>
               <th>文件名</th>
               <th>大小</th>
               <th>分类</th>
+              <th>标签</th>
               <th>修改时间</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="file in files" :key="file.id">
+            <tr v-for="file in files" :key="file.id" :class="{ selected: selectedFiles.includes(file.id) }">
+              <td>
+                <input type="checkbox" :checked="selectedFiles.includes(file.id)" @change="toggleSelect(file.id)">
+              </td>
               <td>
                 <span class="file-name" @click="showPreview(file)">{{ file.name }}</span>
               </td>
               <td>{{ file.sizeFormatted }}</td>
               <td>
                 <span :class="'badge badge-' + getBadgeClass(file.category)">{{ file.category }}</span>
+              </td>
+              <td>
+                <div class="file-tags">
+                  <TagBadge 
+                    v-for="tag in fileTags[file.id] || []" 
+                    :key="tag.id"
+                    :name="tag.name"
+                    :color="tag.color"
+                    :groupName="tag.group_name"
+                    :removable="true"
+                    @remove="removeTagFromFile(file.id, tag.id)"
+                  />
+                  <button class="btn btn-secondary btn-small" @click="openTagSelector(file)">+标签</button>
+                </div>
               </td>
               <td>{{ formatDate(file.modified_at) }}</td>
               <td>
@@ -64,7 +92,20 @@
       </div>
     </div>
 
-    <!-- Preview Modal -->
+    <TagSelector 
+      :visible="tagSelectorVisible" 
+      :selectedIds="currentFileTags"
+      @close="tagSelectorVisible = false"
+      @confirm="handleTagConfirm"
+    />
+
+    <TagSelector 
+      :visible="batchTaggerVisible" 
+      :selectedIds="batchSelectedTagIds"
+      @close="batchTaggerVisible = false"
+      @confirm="handleBatchTagConfirm"
+    />
+
     <div class="modal" v-if="previewFile" @click.self="previewFile = null">
       <div class="modal-content modal-large">
         <div class="modal-header">
@@ -76,19 +117,6 @@
           <video v-else-if="previewType === 'video'" :src="streamUrl" controls class="preview-video"></video>
           <audio v-else-if="previewType === 'audio'" :src="streamUrl" controls class="preview-audio"></audio>
           <iframe v-else-if="previewType === 'pdf'" :src="streamUrl" class="preview-pdf"></iframe>
-          
-          <div v-else-if="previewType === 'markdown'" class="preview-text preview-markdown" 
-            ref="markdownRef" tabindex="0" @keydown.ctrl.a="selectAllInElement($event)">
-            <div v-if="textLoading" class="loading-text">加载中...</div>
-            <div v-else v-html="renderedMarkdown" class="markdown-body"></div>
-          </div>
-          
-          <div v-else-if="previewType === 'text'" class="preview-text" 
-            ref="textRef" tabindex="0" @keydown.ctrl.a="selectAllInElement($event)">
-            <div v-if="textLoading" class="loading-text">加载中...</div>
-            <pre v-else class="text-content">{{ textContent }}</pre>
-          </div>
-          
           <div v-else class="preview-unknown">
             <p>无法预览此文件类型</p>
             <button class="btn btn-primary" @click="openLocation(previewFile)">打开文件位置</button>
@@ -97,7 +125,6 @@
       </div>
     </div>
 
-    <!-- Rename Modal -->
     <div class="modal" v-if="renameFile" @click.self="renameFile = null">
       <div class="modal-content">
         <div class="modal-header">
@@ -115,12 +142,18 @@
 </template>
 
 <script>
-import { ref, onMounted, computed, nextTick } from 'vue'
-import { marked } from 'marked'
-import { getFiles, getCategories, openFile, renameFile as apiRename, deleteFile, addFavorite, removeFavorite, getPreview, getStreamUrl } from '../api'
+import { ref, onMounted, computed } from 'vue'
+import TagBadge from '../components/TagBadge.vue'
+import TagSelector from '../components/TagSelector.vue'
+import { 
+  getFiles, getCategories, openFile, renameFile as apiRename, deleteFile, 
+  addFavorite, removeFavorite, getPreview, getStreamUrl,
+  getFileTags, addFileTag, removeFileTag, batchFileTags
+} from '../api'
 
 export default {
   name: 'FileListView',
+  components: { TagBadge, TagSelector },
   setup() {
     const files = ref([])
     const categories = ref([])
@@ -133,23 +166,26 @@ export default {
     const page = ref(1)
     const pageSize = ref(50)
     const total = ref(0)
+    const fileTags = ref({})
+    const selectedFiles = ref([])
 
     const previewFile = ref(null)
     const previewType = ref('')
     const streamUrl = ref('')
-    const textContent = ref('')
-    const textLoading = ref(false)
-    const textRef = ref(null)
-    const markdownRef = ref(null)
     
     const renameFile = ref(null)
     const newName = ref('')
 
-    const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
+    const tagSelectorVisible = ref(false)
+    const currentEditingFile = ref(null)
+    const currentFileTags = ref([])
 
-    const renderedMarkdown = computed(() => {
-      if (!textContent.value) return ''
-      return marked(textContent.value)
+    const batchTaggerVisible = ref(false)
+    const batchSelectedTagIds = ref([])
+
+    const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
+    const isAllSelected = computed(() => {
+      return files.value.length > 0 && selectedFiles.value.length === files.value.length
     })
 
     onMounted(async () => {
@@ -171,6 +207,7 @@ export default {
     async function loadFiles() {
       loading.value = true
       error.value = ''
+      selectedFiles.value = []
       try {
         const res = await getFiles({
           category: category.value,
@@ -183,6 +220,7 @@ export default {
         if (res.success) {
           files.value = res.data.files
           total.value = res.data.total
+          await loadFileTagsBatch(res.data.files.map(f => f.id))
         } else {
           error.value = res.error
         }
@@ -190,6 +228,52 @@ export default {
         error.value = err.message
       }
       loading.value = false
+    }
+
+    async function loadFileTagsBatch(fileIds) {
+      for (const fileId of fileIds) {
+        try {
+          const res = await getFileTags(fileId)
+          if (res.success) {
+            fileTags.value[fileId] = res.data
+          }
+        } catch (err) {
+          fileTags.value[fileId] = []
+        }
+      }
+    }
+
+    function toggleSelectAll(event) {
+      if (event.target.checked) {
+        selectedFiles.value = files.value.map(f => f.id)
+      } else {
+        selectedFiles.value = []
+      }
+    }
+
+    function toggleSelect(fileId) {
+      const index = selectedFiles.value.indexOf(fileId)
+      if (index > -1) {
+        selectedFiles.value.splice(index, 1)
+      } else {
+        selectedFiles.value.push(fileId)
+      }
+    }
+
+    function showBatchTagger() {
+      batchSelectedTagIds.value = []
+      batchTaggerVisible.value = true
+    }
+
+    async function handleBatchTagConfirm(tagIds) {
+      if (tagIds.length === 0) return
+      try {
+        await batchFileTags(selectedFiles.value, tagIds, 'add')
+        await loadFileTagsBatch(selectedFiles.value)
+        selectedFiles.value = []
+      } catch (err) {
+        alert('批量打标失败: ' + err.message)
+      }
     }
 
     function prevPage() {
@@ -218,49 +302,15 @@ export default {
       previewFile.value = file
       streamUrl.value = getStreamUrl(file.id)
       previewType.value = ''
-      textContent.value = ''
       
       try {
         const res = await getPreview(file.id)
         if (res.success) {
           previewType.value = res.data.previewType
-          
-          if (previewType.value === 'text' || previewType.value === 'markdown') {
-            await loadTextContent(file.id)
-          }
         }
       } catch (err) {
         console.error('获取预览失败:', err)
       }
-    }
-
-    async function loadTextContent(fileId) {
-      textLoading.value = true
-      try {
-        const response = await fetch(getStreamUrl(fileId))
-        textContent.value = await response.text()
-      } catch (err) {
-        console.error('加载文本内容失败:', err)
-        textContent.value = '加载失败'
-      }
-      textLoading.value = false
-      
-      nextTick(() => {
-        const refEl = previewType.value === 'markdown' ? markdownRef.value : textRef.value
-        if (refEl) {
-          refEl.focus()
-        }
-      })
-    }
-
-    function selectAllInElement(event) {
-      event.preventDefault()
-      const el = event.currentTarget
-      const selection = window.getSelection()
-      const range = document.createRange()
-      range.selectNodeContents(el)
-      selection.removeAllRanges()
-      selection.addRange(range)
     }
 
     function showRename(file) {
@@ -312,6 +362,47 @@ export default {
       }
     }
 
+    function openTagSelector(file) {
+      currentEditingFile.value = file
+      currentFileTags.value = (fileTags.value[file.id] || []).map(t => t.id)
+      tagSelectorVisible.value = true
+    }
+
+    async function handleTagConfirm(tagIds) {
+      if (!currentEditingFile.value) return
+      const fileId = currentEditingFile.value.id
+      const existingTagIds = (fileTags.value[fileId] || []).map(t => t.id)
+      const toAdd = tagIds.filter(id => !existingTagIds.includes(id))
+      const toRemove = existingTagIds.filter(id => !tagIds.includes(id))
+      
+      try {
+        for (const tagId of toAdd) {
+          await addFileTag(fileId, tagId)
+        }
+        for (const tagId of toRemove) {
+          await removeFileTag(fileId, tagId)
+        }
+        const res = await getFileTags(fileId)
+        if (res.success) {
+          fileTags.value[fileId] = res.data
+        }
+      } catch (err) {
+        alert('打标失败: ' + err.message)
+      }
+    }
+
+    async function removeTagFromFile(fileId, tagId) {
+      try {
+        await removeFileTag(fileId, tagId)
+        const res = await getFileTags(fileId)
+        if (res.success) {
+          fileTags.value[fileId] = res.data
+        }
+      } catch (err) {
+        alert('移除标签失败: ' + err.message)
+      }
+    }
+
     function getBadgeClass(category) {
       const map = {
         '视频': 'video',
@@ -330,13 +421,17 @@ export default {
     return {
       files, categories, loading, error,
       category, search, orderBy, orderDir, page, pageSize, total, totalPages,
-      previewFile, previewType, streamUrl, textContent, textLoading, renderedMarkdown,
-      textRef, markdownRef,
+      previewFile, previewType, streamUrl,
       renameFile, newName,
+      fileTags, selectedFiles, isAllSelected,
+      tagSelectorVisible, currentFileTags, currentEditingFile,
+      batchTaggerVisible, batchSelectedTagIds,
       loadFiles, prevPage, nextPage,
       openLocation, showPreview, showRename, doRename,
       toggleFavorite, confirmDelete,
-      getBadgeClass, formatDate, selectAllInElement
+      toggleSelectAll, toggleSelect, showBatchTagger, handleBatchTagConfirm,
+      openTagSelector, handleTagConfirm, removeTagFromFile,
+      getBadgeClass, formatDate
     }
   }
 }
@@ -355,6 +450,17 @@ export default {
 .actions {
   display: flex;
   gap: 4px;
+}
+
+.file-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+tr.selected {
+  background-color: var(--primary-light, #e8f4f8);
 }
 
 .modal-large {
@@ -391,74 +497,5 @@ export default {
 .preview-unknown {
   text-align: center;
   color: var(--text-muted);
-}
-
-.preview-text {
-  width: 100%;
-  max-height: 500px;
-  overflow: auto;
-  text-align: left;
-  user-select: text;
-}
-
-.preview-text:focus {
-  outline: none;
-}
-
-.text-content {
-  margin: 0;
-  padding: 16px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  max-height: 480px;
-  overflow: auto;
-  user-select: text;
-}
-
-.loading-text {
-  color: var(--text-muted);
-  padding: 20px;
-}
-
-.preview-markdown {
-  padding: 16px;
-  background: var(--bg-secondary);
-  border-radius: 8px;
-  user-select: text;
-}
-
-.markdown-body {
-  line-height: 1.6;
-  user-select: text;
-}
-
-.markdown-body h1,
-.markdown-body h2,
-.markdown-body h3 {
-  margin-top: 1em;
-  margin-bottom: 0.5em;
-}
-
-.markdown-body code {
-  background: rgba(0, 0, 0, 0.1);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: 'Consolas', 'Monaco', monospace;
-}
-
-.markdown-body pre {
-  background: rgba(0, 0, 0, 0.1);
-  padding: 12px;
-  border-radius: 8px;
-  overflow-x: auto;
-}
-
-.markdown-body pre code {
-  background: none;
-  padding: 0;
 }
 </style>

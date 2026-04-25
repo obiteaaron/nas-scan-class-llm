@@ -115,3 +115,61 @@ export function getSearchHistory() {
 export function clearSearchHistory() {
   return request('/search/history', { method: 'DELETE' })
 }
+
+export function getTagGroups() {
+  return request('/tag-groups')
+}
+
+export function createTagGroup(data) {
+  return request('/tag-groups', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export function updateTagGroup(id, data) {
+  return request('/tag-groups/' + id, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function deleteTagGroup(id) {
+  return request('/tag-groups/' + id, { method: 'DELETE' })
+}
+
+export function getTags(groupId = null) {
+  const query = groupId ? '?groupId=' + groupId : ''
+  return request('/tags' + query)
+}
+
+export function createTag(data) {
+  return request('/tags', { method: 'POST', body: JSON.stringify(data) })
+}
+
+export function updateTag(id, data) {
+  return request('/tags/' + id, { method: 'PUT', body: JSON.stringify(data) })
+}
+
+export function deleteTag(id) {
+  return request('/tags/' + id, { method: 'DELETE' })
+}
+
+export function getTagStats() {
+  return request('/tags/stats')
+}
+
+export function getFileTags(fileId) {
+  return request('/files/' + fileId + '/tags')
+}
+
+export function addFileTag(fileId, tagId) {
+  return request('/files/' + fileId + '/tags', { method: 'POST', body: JSON.stringify({ tagId }) })
+}
+
+export function removeFileTag(fileId, tagId) {
+  return request('/files/' + fileId + '/tags/' + tagId, { method: 'DELETE' })
+}
+
+export function batchFileTags(fileIds, tagIds, action) {
+  return request('/files/batch/tags', { method: 'POST', body: JSON.stringify({ fileIds, tagIds, action }) })
+}
+
+export function getFilesByTags(params) {
+  const query = new URLSearchParams(params).toString()
+  return request('/files/by-tags?' + query)
+}

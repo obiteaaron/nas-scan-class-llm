@@ -8,6 +8,7 @@
           <router-link to="/files" class="nav-link">文件列表</router-link>
           <router-link to="/search" class="nav-link">搜索</router-link>
           <router-link to="/statistics" class="nav-link">统计</router-link>
+          <router-link to="/tags" class="nav-link">标签管理</router-link>
           <router-link to="/settings" class="nav-link">设置</router-link>
         </nav>
       </div>

@@ -15,6 +15,13 @@
 - ✏️ **重命名** - 在线重命名文件
 - 🗑️ **删除文件** - 支持安全删除（移至回收站）
 - ⭐ **收藏功能** - 标记常用文件
+- 🏷️ **自定义标签** - 多标签、分组、颜色、批量打标
+
+### 标签系统
+- 📂 **标签分组** - 按类型/年份/状态等分组管理标签
+- 🎨 **标签颜色** - 自定义标签颜色，视觉区分更清晰
+- ✅ **批量打标** - 选中多个文件一次性添加标签
+- 🔍 **标签筛选** - 按标签组合筛选文件
 
 ### 文件预览
 - 🎬 **视频播放** - 流式播放，支持拖动进度
@@ -68,9 +75,10 @@ npm start
 | 页面 | 功能 |
 |------|------|
 | 首页 | 统计概览、快速操作 |
-| 文件列表 | 分页浏览、筛选、操作 |
+| 文件列表 | 分页浏览、筛选、打标、操作 |
 | 搜索 | 关键词搜索、历史记录 |
 | 统计 | 分类分布图表 |
+| 标签管理 | 创建/编辑标签分组和标签 |
 | 设置 | 扫描配置、定时任务 |
 
 ## 文件操作
@@ -113,6 +121,31 @@ CREATE TABLE scan_paths (
     enabled INTEGER DEFAULT 1,
     last_scan DATETIME
 );
+
+-- 标签分组表
+CREATE TABLE tag_groups (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT DEFAULT '#6366f1',
+    sort_order INTEGER DEFAULT 0
+);
+
+-- 标签表
+CREATE TABLE tags (
+    id INTEGER PRIMARY KEY,
+    group_id INTEGER,
+    name TEXT NOT NULL,
+    color TEXT DEFAULT '#6366f1',
+    sort_order INTEGER DEFAULT 0
+);
+
+-- 文件-标签关联表
+CREATE TABLE file_tags (
+    id INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL,
+    tag_id INTEGER NOT NULL,
+    UNIQUE(file_id, tag_id)
+);
 ```
 
 ## API 端点
@@ -133,6 +166,12 @@ CREATE TABLE scan_paths (
 | `/api/statistics` | GET | 统计数据 |
 | `/api/categories` | GET | 分类列表 |
 | `/api/search` | GET | 搜索文件 |
+| `/api/tag-groups` | GET/POST/PUT/DELETE | 标签分组管理 |
+| `/api/tags` | GET/POST/PUT/DELETE | 标签管理 |
+| `/api/tags/stats` | GET | 标签统计 |
+| `/api/files/:id/tags` | GET/POST/DELETE | 文件标签操作 |
+| `/api/files/batch/tags` | POST | 批量打标 |
+| `/api/files/by-tags` | GET | 按标签筛选文件 |
 
 ## Cron 表达式示例
 
@@ -166,6 +205,7 @@ npm run build  # 构建生产版本
 
 ## 版本历史
 
+- v1.1.0 - 自定义标签系统（分组、颜色、批量打标）
 - v1.0.2 - SQLite 数据库 + Vue 3 文件管理系统
 - v1.0.1 - 本地分类 + 统计饼图
 - v1.0.0 - 基础扫描 + Markdown 输出
