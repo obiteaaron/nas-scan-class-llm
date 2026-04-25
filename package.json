@@ -1,6 +1,6 @@
 {
   "name": "nas-indexer",
-  "version": "2.0.0",
+  "version": "1.0.2",
   "description": "NAS 文件索引工具 - 扫描目录生成 Markdown 知识库",
   "main": "src/server.js",
   "scripts": {
@@ -8,11 +8,16 @@
     "dev": "node src/server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "node-cron": "^3.0.3"
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "sql.js": "^1.14.1"
   },
-  "keywords": ["nas", "indexer", "markdown"],
+  "keywords": [
+    "nas",
+    "indexer",
+    "markdown"
+  ],
   "author": "",
   "license": "MIT"
 }

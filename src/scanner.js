@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { storage } = require('./storage');
+const { database } = require('./database');
 
 /**
  * 检查文件是否应该被包含（基于后缀过滤）
@@ -195,9 +196,62 @@ function performScan(scanPaths, outputFile, excludePatterns = [], fileExtensionF
   };
 }
 
+async function performScanWithDatabase(scanPaths, excludePatterns = [], fileExtensionFilter = {}) {
+  if (!database.initialized) {
+    await database.init();
+  }
+
+  console.log(`开始扫描，路径：${scanPaths.join(', ')}`);
+  
+  database.clearAllFiles();
+
+  const scanResults = [];
+  let totalFiles = 0;
+  let totalSize = 0;
+
+  for (const scanPath of scanPaths) {
+    const files = scanDirectory(scanPath, excludePatterns, fileExtensionFilter);
+    const filesWithStats = files.map(filePath => {
+      try {
+        const stat = fs.statSync(filePath);
+        totalSize += stat.size;
+        return { path: filePath, stat };
+      } catch (err) {
+        return { path: filePath, stat: null };
+      }
+    });
+    
+    database.insertFilesBatch(filesWithStats);
+    scanResults.push({ path: scanPath, files, fileCount: files.length });
+    totalFiles += files.length;
+    console.log(`  ${scanPath}: ${files.length} 个文件`);
+  }
+
+  console.log(`扫描完成，已写入数据库`);
+  console.log(`  总文件数：${totalFiles}`);
+  console.log(`  总大小：${formatSize(totalSize)}`);
+
+  return {
+    success: true,
+    timestamp: new Date().toISOString(),
+    results: scanResults,
+    totalFiles,
+    totalSize
+  };
+}
+
+function formatSize(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(2) + ' ' + units[i];
+}
+
 module.exports = {
   scanDirectory,
   generateMarkdownTree,
   performScan,
-  shouldIncludeFile
+  performScanWithDatabase,
+  shouldIncludeFile,
+  formatSize
 };

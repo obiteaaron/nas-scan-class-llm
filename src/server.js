@@ -3,26 +3,32 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const cron = require('node-cron');
-const { performScan } = require('./scanner');
-const { storage, formatSize } = require('./storage');
+const { performScanWithDatabase, formatSize } = require('./scanner');
+const { database } = require('./database');
+const { fileOps } = require('./file-ops');
+const { streamFile, serveImage, servePdf, getPreviewType } = require('./stream');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 中间件
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../public')));
 
-// 配置管理
 const PROJECT_ROOT = path.join(__dirname, '..');
 const DEFAULT_STORAGE_PATH = path.join(PROJECT_ROOT, 'profiles');
 const DEFAULT_CONFIG_FILE = path.join(PROJECT_ROOT, 'config.default.json');
 
-// 获取存储路径（优先使用用户配置，否则使用默认 profiles 目录）
+let dbInitialized = false;
+
+async function initDatabase() {
+  if (!dbInitialized) {
+    await database.init();
+    dbInitialized = true;
+  }
+}
+
 function getStoragePath(config) {
   if (config.storagePath && config.storagePath.trim() !== '') {
-    // 处理相对路径：如果是相对路径，转换为绝对路径
     let storagePath = config.storagePath;
     if (!path.isAbsolute(storagePath)) {
       storagePath = path.resolve(PROJECT_ROOT, storagePath);
@@ -32,18 +38,11 @@ function getStoragePath(config) {
   return DEFAULT_STORAGE_PATH;
 }
 
-// 获取存储文件路径
 function getStorageFilePath(config, filename) {
   const storagePath = getStoragePath(config);
   return path.join(storagePath, filename);
 }
 
-// 获取配置文件路径
-function getConfigFilePath(config) {
-  return getStorageFilePath(config, 'config.json');
-}
-
-// 确保存储目录存在
 function ensureStorageDir(config) {
   const storagePath = getStoragePath(config);
   if (!fs.existsSync(storagePath)) {
@@ -55,10 +54,8 @@ function ensureStorageDir(config) {
 
 function loadConfig() {
   try {
-    // 先尝试从默认配置加载 storagePath
     let defaultConfig = getDefaultConfig();
     
-    // 检查 profiles 目录是否有配置文件
     const profilesConfigPath = path.join(DEFAULT_STORAGE_PATH, 'config.json');
     if (fs.existsSync(profilesConfigPath)) {
       const config = JSON.parse(fs.readFileSync(profilesConfigPath, 'utf-8'));
@@ -66,7 +63,6 @@ function loadConfig() {
       return config;
     }
     
-    // 检查是否有用户自定义存储路径的配置（从命令行参数或环境变量）
     const envStoragePath = process.env.NAS_STORAGE_PATH;
     if (envStoragePath) {
       const envConfigPath = path.join(envStoragePath, 'config.json');
@@ -77,24 +73,20 @@ function loadConfig() {
       }
     }
     
-    // 检查旧版本用户目录配置（用于迁移）
     const userHome = process.env.USERPROFILE || process.env.HOME || require('os').homedir();
     const legacyConfigPath = path.join(userHome, 'nasscanclassllm', 'config.json');
     if (fs.existsSync(legacyConfigPath)) {
       const config = JSON.parse(fs.readFileSync(legacyConfigPath, 'utf-8'));
       console.log('检测到旧版本配置，正在迁移到 profiles 目录...');
-      // 确保 storagePath 字段存在
       if (!config.storagePath) {
         config.storagePath = '';
       }
-      // 迁移到 profiles 目录
       ensureStorageDir(defaultConfig);
       fs.writeFileSync(profilesConfigPath, JSON.stringify(config, null, 2), 'utf-8');
       console.log('配置已迁移:', profilesConfigPath);
       return config;
     }
     
-    // 最后使用默认配置，并保存到 profiles 目录
     ensureStorageDir(defaultConfig);
     fs.writeFileSync(profilesConfigPath, JSON.stringify(defaultConfig, null, 2), 'utf-8');
     console.log('使用默认配置，已保存到:', profilesConfigPath);
@@ -114,7 +106,6 @@ function saveConfig(config) {
 }
 
 function getDefaultConfig() {
-  // 尝试从 config.default.json 加载
   try {
     if (fs.existsSync(DEFAULT_CONFIG_FILE)) {
       const defaultConfig = JSON.parse(fs.readFileSync(DEFAULT_CONFIG_FILE, 'utf-8'));
@@ -124,7 +115,6 @@ function getDefaultConfig() {
     console.warn('加载默认配置文件失败，使用内置默认值:', err.message);
   }
   
-  // 内置默认配置
   return {
     storagePath: '',
     scanPaths: [],
@@ -146,28 +136,18 @@ function getDefaultConfig() {
         '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz', '.tgz'
       ]
     },
-    outputFile: 'nas_scan.md',
-    classifyOutputFile: 'nas_class.md',
-    aiConfig: {
-      apiKey: '',
-      endpoint: 'https://coding.dashscope.aliyuncs.com/v1',
-      model: 'qwen3.5-plus'
-    },
     categories: ['电影/视频', '音乐/音频', '文档/资料', '软件/安装包', '图片/照片', '项目/代码', '备份/归档', '其他']
   };
 }
 
-// 定时任务存储
 let scanJob = null;
 
 function scheduleScan(config) {
-  // 取消之前的任务
   if (scanJob) {
     scanJob.stop();
     scanJob = null;
   }
 
-  // 创建新任务
   if (config.scanPaths && config.scanPaths.length > 0) {
     scanJob = cron.schedule(config.scanTime, async () => {
       console.log(`[${new Date().toLocaleString()}] 定时扫描开始`);
@@ -181,37 +161,32 @@ function scheduleScan(config) {
 
 async function runScan(config) {
   try {
-    // 获取存储目录路径
-    const storagePath = ensureStorageDir(config);
+    ensureStorageDir(config);
     
-    // 执行扫描
-    const scanResult = performScan(
+    await initDatabase();
+    const result = await performScanWithDatabase(
       config.scanPaths,
-      config.outputFile,
       config.excludePatterns || [],
-      config.fileExtensionFilter || { whitelist: [], blacklist: [] },
-      storagePath
+      config.fileExtensionFilter || { whitelist: [], blacklist: [] }
     );
 
-    // AI 分类改为手动触发，不再自动执行
-
-    return scanResult;
+    return result;
   } catch (err) {
     console.error('扫描失败:', err.message);
     throw err;
   }
 }
 
-// API 路由
+// API Routes
 
-// 获取配置
-  app.get('/api/config', (req, res) => {
+app.get('/api/config', async (req, res) => {
+  await initDatabase();
   const config = loadConfig();
   res.json(config);
 });
 
-// 保存配置
-app.post('/api/config', (req, res) => {
+app.post('/api/config', async (req, res) => {
+  await initDatabase();
   try {
     const newConfig = { ...loadConfig(), ...req.body };
     saveConfig(newConfig);
@@ -222,14 +197,14 @@ app.post('/api/config', (req, res) => {
   }
 });
 
-// 获取完整配置（用于初始化表单）
-app.get('/api/config/full', (req, res) => {
+app.get('/api/config/full', async (req, res) => {
+  await initDatabase();
   const config = loadConfig();
   res.json(config);
 });
 
-// 获取存储路径信息
-app.get('/api/storage/path', (req, res) => {
+app.get('/api/storage/path', async (req, res) => {
+  await initDatabase();
   try {
     const config = loadConfig();
     const storagePath = getStoragePath(config);
@@ -247,9 +222,9 @@ app.get('/api/storage/path', (req, res) => {
   }
 });
 
-// 手动触发扫描
 app.post('/api/scan', async (req, res) => {
   try {
+    await initDatabase();
     const config = loadConfig();
 
     if (!config.scanPaths || config.scanPaths.length === 0) {
@@ -262,8 +237,9 @@ app.post('/api/scan', async (req, res) => {
       success: true,
       message: '扫描完成',
       data: {
-        scannedPaths: result.results.map(r => ({ path: r.path, fileCount: r.files?.length || 0 })),
-        outputFile: result.outputFile
+        scannedPaths: result.results.map(r => ({ path: r.path, fileCount: r.fileCount || 0 })),
+        totalFiles: result.totalFiles,
+        totalSize: formatSize(result.totalSize)
       }
     });
   } catch (err) {
@@ -271,125 +247,52 @@ app.post('/api/scan', async (req, res) => {
   }
 });
 
-// 获取扫描内容
-app.get('/api/content/scan', (req, res) => {
+app.get('/api/statistics', async (req, res) => {
+  await initDatabase();
   try {
-    const config = loadConfig();
-    const storagePath = getStoragePath(config);
-    const filePath = path.isAbsolute(config.outputFile)
-      ? config.outputFile
-      : path.join(storagePath, config.outputFile);
+    const categoryStats = database.getStatistics();
+    const totalStats = database.getTotalStats();
 
-    if (!fs.existsSync(filePath)) {
-      return res.json({ success: false, content: '', error: '文件不存在，请先执行扫描' });
-    }
+    const formattedStats = categoryStats.map(stat => ({
+      category: stat.category,
+      count: stat.count,
+      size: formatSize(stat.totalSize),
+      sizeBytes: stat.totalSize,
+      percent: totalStats.totalSize > 0 ? ((stat.totalSize / totalStats.totalSize) * 100).toFixed(1) : 0
+    }));
 
-    storage.init(filePath);
-    const content = storage.getMarkdownContent();
-    
-    res.json({ success: true, content });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 获取统计数据（用于饼图展示）
-app.get('/api/statistics', (req, res) => {
-  try {
-    const config = loadConfig();
-    const storagePath = getStoragePath(config);
-    const filePath = path.isAbsolute(config.outputFile)
-      ? config.outputFile
-      : path.join(storagePath, config.outputFile);
-
-    if (!fs.existsSync(filePath)) {
-      return res.json({ success: false, error: '文件不存在，请先执行扫描', stats: null });
-    }
-
-    storage.init(filePath);
-    const stats = storage.getStatistics();
-
-    const formattedStats = {
-      meta: {
-        scanTime: stats.meta.scanTime,
-        totalFiles: stats.meta.totalFiles,
-        totalSize: formatSize(stats.meta.totalSize),
-        totalSizeBytes: stats.meta.totalSize
-      },
-      local: formatCategoryStats(stats.local, stats.meta.totalSize)
-    };
-
-    res.json({ success: true, stats: formattedStats });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 格式化分类统计数据
-function formatCategoryStats(categoryStats, totalSize) {
-  const result = [];
-  for (const [category, data] of Object.entries(categoryStats)) {
-    const percent = totalSize > 0 ? ((data.totalSize / totalSize) * 100).toFixed(1) : 0;
-    result.push({
-      category,
-      count: data.count,
-      size: formatSize(data.totalSize),
-      sizeBytes: data.totalSize,
-      percent: parseFloat(percent)
+    res.json({
+      success: true,
+      stats: {
+        meta: {
+          totalFiles: totalStats.totalFiles,
+          totalSize: formatSize(totalStats.totalSize),
+          totalSizeBytes: totalStats.totalSize
+        },
+        categories: formattedStats
+      }
     });
-  }
-  result.sort((a, b) => b.sizeBytes - a.sizeBytes);
-  return result;
-}
-
-// 搜索文件（使用 storage 模块）
-app.get('/api/search', (req, res) => {
-  try {
-    const { q } = req.query;
-
-    if (!q) {
-      return res.json({ success: true, results: [] });
-    }
-
-    const config = loadConfig();
-    const storagePath = getStoragePath(config);
-    const filePath = path.isAbsolute(config.outputFile)
-      ? config.outputFile
-      : path.join(storagePath, config.outputFile);
-
-    if (!fs.existsSync(filePath)) {
-      return res.json({ success: false, results: [], error: '文件不存在' });
-    }
-
-    storage.init(filePath);
-    const files = storage.searchFiles(q);
-
-    const results = files.slice(0, 100).map(f => `- ${f.path} [${f.localClass}]`);
-
-    res.json({ success: true, results, total: results.length });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 获取扫描状态
-app.get('/api/status', (req, res) => {
+app.get('/api/status', async (req, res) => {
+  await initDatabase();
   try {
     const config = loadConfig();
     const storagePath = getStoragePath(config);
 
-    const scanPath = path.isAbsolute(config.outputFile)
-      ? config.outputFile
-      : path.join(storagePath, config.outputFile);
-
-    const scanFileExists = fs.existsSync(scanPath);
+    const totalStats = database.getTotalStats();
+    const hasData = totalStats.totalFiles > 0;
 
     res.json({
       success: true,
       status: {
         storagePath,
-        scanFileExists,
-        scanTime: scanFileExists ? fs.statSync(scanPath).mtime.toLocaleString('zh-CN') : null,
+        hasData,
+        totalFiles: totalStats.totalFiles,
+        totalSize: formatSize(totalStats.totalSize),
         scheduled: scanJob !== null,
         nextScan: scanJob ? '按 cron 计划执行' : '未设置'
       }
@@ -399,8 +302,315 @@ app.get('/api/status', (req, res) => {
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`\n🚀 NAS Indexer v2.0.0 服务已启动`);
+// File Management API
+
+app.get('/api/files', async (req, res) => {
+  await initDatabase();
+  try {
+    const { category, search, orderBy, orderDir, page = 1, pageSize = 50 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(pageSize);
+    const limit = parseInt(pageSize);
+
+    const files = database.getFiles({
+      category,
+      search,
+      orderBy: orderBy || 'name',
+      orderDir: orderDir || 'ASC',
+      limit,
+      offset
+    });
+
+    const total = database.getFileCount({ category, search });
+
+    const formattedFiles = files.map(f => ({
+      ...f,
+      sizeFormatted: formatSize(f.size || 0)
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        files: formattedFiles,
+        total,
+        page: parseInt(page),
+        pageSize: limit,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/files/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const info = fileOps.getFileInfo(file.path);
+    res.json({ success: true, data: { ...file, ...info.info, sizeFormatted: formatSize(file.size || 0) } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/files/:id/open', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const result = fileOps.openInExplorer(file.path);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/files/:id/rename', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const { newName } = req.body;
+    if (!newName) {
+      return res.status(400).json({ success: false, error: '请提供新名称' });
+    }
+
+    const result = fileOps.renameFile(file.path, newName);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/files/:id/copy', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const { targetDir } = req.body;
+    if (!targetDir) {
+      return res.status(400).json({ success: false, error: '请提供目标目录' });
+    }
+
+    const result = fileOps.copyFile(file.path, targetDir);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/files/:id/move', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const { targetDir } = req.body;
+    if (!targetDir) {
+      return res.status(400).json({ success: false, error: '请提供目标目录' });
+    }
+
+    const result = fileOps.moveFile(file.path, targetDir);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/files/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const { permanent } = req.query;
+    const result = fileOps.deleteFile(file.path, permanent === 'true');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/folder', async (req, res) => {
+  await initDatabase();
+  try {
+    const { parentPath, folderName } = req.body;
+    if (!parentPath || !folderName) {
+      return res.status(400).json({ success: false, error: '请提供父目录和文件夹名称' });
+    }
+
+    const result = fileOps.createFolder(parentPath, folderName);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/directory', async (req, res) => {
+  await initDatabase();
+  try {
+    const { path: dirPath } = req.query;
+    if (!dirPath) {
+      return res.status(400).json({ success: false, error: '请提供目录路径' });
+    }
+
+    const result = fileOps.getDirectoryContent(dirPath);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Favorites API
+
+app.get('/api/favorites', async (req, res) => {
+  await initDatabase();
+  try {
+    const favorites = database.getFavorites();
+    const formatted = favorites.map(f => ({
+      ...f,
+      sizeFormatted: formatSize(f.size || 0)
+    }));
+    res.json({ success: true, data: formatted });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/favorites/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    database.addFavorite(parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/favorites/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    database.removeFavorite(parseInt(req.params.id));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Preview API
+
+app.get('/api/preview/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const previewType = getPreviewType(file.ext);
+    res.json({
+      success: true,
+      data: {
+        path: file.path,
+        name: file.name,
+        ext: file.ext,
+        previewType,
+        previewUrl: `/api/stream/${file.id}`
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/stream/:id', async (req, res) => {
+  await initDatabase();
+  try {
+    const file = database.getFileById(parseInt(req.params.id));
+    if (!file) {
+      return res.status(404).json({ success: false, error: '文件不存在' });
+    }
+
+    const previewType = getPreviewType(file.ext);
+    
+    if (previewType === 'image') {
+      serveImage(res, file.path);
+    } else if (previewType === 'pdf') {
+      servePdf(res, file.path);
+    } else {
+      streamFile(req, res, file.path);
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Search History API
+
+app.get('/api/search/history', async (req, res) => {
+  await initDatabase();
+  try {
+    const history = database.getSearchHistory(10);
+    res.json({ success: true, data: history });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/search/history', async (req, res) => {
+  await initDatabase();
+  try {
+    database.clearSearchHistory();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Categories API
+
+app.get('/api/categories', async (req, res) => {
+  await initDatabase();
+  try {
+    const stats = database.getStatistics();
+    const categories = stats.map(s => s.category);
+    res.json({ success: true, data: categories });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Static files - serve Vue frontend
+const frontendPath = path.join(PROJECT_ROOT, 'frontend', 'dist');
+if (fs.existsSync(frontendPath)) {
+  app.use(express.static(frontendPath));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendPath, 'index.html'));
+  });
+} else {
+  app.use(express.static(path.join(__dirname, '../public')));
+}
+
+const server = app.listen(PORT, async () => {
+  await initDatabase();
+  console.log(`\n🚀 NAS Indexer v1.0.2 服务已启动`);
   console.log(`📍 访问地址：http://localhost:${PORT}`);
   console.log(`📁 默认存储目录：${DEFAULT_STORAGE_PATH}\n`);
 

@@ -25,6 +25,5 @@
       ".cache", ".tmp", ".temp", ".swp", ".bak", ".old", ".log",
       ".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz"
     ]
-  },
-  "outputFile": "nas_scan.md"
+  }
 }

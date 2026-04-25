@@ -1,18 +1,31 @@
 # NAS 文件索引工具
 
-扫描 NAS 目录结构,生成 Markdown 知识库,支持本地分类和统计分析。
+一个完整的 NAS 文件管理系统，支持文件索引、查询、预览和基础文件操作。基于 Vue 3 + SQLite 构建现代化 Web 界面。
 
 ## 功能特点
 
-- 📁 **目录扫描** - 扫描指定路径，生成文件列表
-- 📝 **Markdown 输出** - 结构化表格格式，包含文件元信息
-- 🏷️ **本地分类** - 基于文件后缀自动分类（视频、音频、图片、文档等）
-- 📊 **统计分析** - 饼图展示文件类型分布和占比
-- 🔍 **Web 搜索** - 浏览器访问，本地快速检索
+### 核心功能
+- 📁 **目录扫描** - 扫描指定路径，生成文件索引
+- 🗄️ **SQLite 存储** - 高效的数据存储和查询
+- 🔍 **高级搜索** - 多条件筛选、分类过滤、排序
+- 📊 **统计分析** - 分类分布、文件数量、存储占比
+
+### 文件管理
+- 📍 **文件定位** - 一键打开文件所在目录
+- ✏️ **重命名** - 在线重命名文件
+- 🗑️ **删除文件** - 支持安全删除（移至回收站）
+- ⭐ **收藏功能** - 标记常用文件
+
+### 文件预览
+- 🎬 **视频播放** - 流式播放，支持拖动进度
+- 🖼️ **图片预览** - 直接显示图片内容
+- 🎵 **音频播放** - 在线播放音频文件
+- 📄 **PDF 查看** - 内嵌 PDF 预览器
+
+### 其他
 - ⏰ **定时扫描** - 支持 Cron 表达式配置自动扫描
-- 💾 **统一存储** - 所有数据合并存储在单一文件中
-
-
+- 📝 **Markdown 输出** - 兼容旧版格式导出
+- 🌙 **暗色主题** - 现代化 UI 设计（待实现）
 
 ## 安装
 
@@ -30,58 +43,90 @@ npm start
 
 服务默认运行在 `http://localhost:3000`
 
-### 2. 配置
+### 2. 配置扫描路径
 
-在 Web 页面中配置：
+访问 Web 页面 → 设置 → 配置扫描路径
 
-1. **扫描路径** - 添加你的 NAS 挂载路径（如 `D:\NAS` 或 `/mnt/nas`）
-2. **定时扫描** - Cron 表达式，默认每天凌晨 2 点
-3. **排除模式** - 要跳过的目录/文件模式
+添加你的 NAS 挂载路径：
+- Windows: `D:\NAS` 或 `\\NAS\Share`
+- macOS/Linux: `/mnt/nas` 或 `/Volumes/NAS`
 
-### 3. 操作
+### 3. 执行扫描
 
-- **立即扫描** - 手动触发一次扫描
-- **搜索框** - 输入关键词搜索文件
+点击"立即扫描"按钮，扫描完成后即可在"文件列表"中查看所有文件。
 
-## 输出文件
+## Web 界面
 
-默认情况下，所有文件都存储在项目目录下的 `profiles/` 目录：
+启动服务后访问 `http://localhost:3000`：
+
+| 页面 | 功能 |
+|------|------|
+| 首页 | 统计概览、快速操作 |
+| 文件列表 | 分页浏览、筛选、操作 |
+| 搜索 | 关键词搜索、历史记录 |
+| 统计 | 分类分布图表 |
+| 设置 | 扫描配置、定时任务 |
+
+## 文件操作
+
+在文件列表页面，每个文件支持以下操作：
+
+- **定位** - 在资源管理器中打开文件所在目录
+- **重命名** - 修改文件名
+- **收藏** - 添加到收藏列表
+- **删除** - 移动到回收站或永久删除
+
+## 数据存储
 
 ```
 profiles/
-├── config.json       # 用户配置
-└── nas_scan.md       # 扫描结果（包含分类、统计数据）
+├── config.json        # 用户配置
+└── nas_index.db       # SQLite 数据库（sql.js）
 ```
 
-可通过 Web 配置界面的"存储配置"部分自定义存储目录。
+### SQLite 数据库结构
 
-### nas_scan.md 存储结构
+```sql
+-- 文件表
+CREATE TABLE files (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    ext TEXT,
+    size INTEGER,
+    category TEXT,
+    modified_at DATETIME,
+    scanned_at DATETIME,
+    is_favorite INTEGER DEFAULT 0
+);
 
-```markdown
-# NAS 文件索引
-
-扫描时间：2026/04/11 00:00:00
-总文件数：123
-总大小：45.6 GB
-
----
-
-## 文件列表
-
-| 文件路径 | 文件名 | 大小 | 后缀 | 本地分类 |
-|----------|--------|------|------|----------|
-| \\nas\video\movie.mp4 | movie.mp4 | 2.1 GB | .mp4 | 视频 |
-| \\nas\music\song.mp3 | song.mp3 | 5.2 MB | .mp3 | 音频 |
-
----
-
-## 统计汇总
-
-| 分类 | 文件数 | 大小 | 占比 |
-|------|--------|------|------|
-| 视频 | 45 | 35.2 GB | 77.2% |
-| 音频 | 30 | 2.1 GB | 4.6% |
+-- 扫描路径表
+CREATE TABLE scan_paths (
+    id INTEGER PRIMARY KEY,
+    path TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    last_scan DATETIME
+);
 ```
+
+## API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/config` | GET/POST | 配置管理 |
+| `/api/status` | GET | 系统状态 |
+| `/api/scan` | POST | 手动扫描 |
+| `/api/files` | GET | 分页获取文件列表 |
+| `/api/files/:id` | GET | 获取文件详情 |
+| `/api/files/:id/open` | POST | 打开文件所在目录 |
+| `/api/files/:id/rename` | POST | 重命名文件 |
+| `/api/files/:id` | DELETE | 删除文件 |
+| `/api/favorites` | GET | 获取收藏列表 |
+| `/api/preview/:id` | GET | 获取预览信息 |
+| `/api/stream/:id` | GET | 流式播放文件 |
+| `/api/statistics` | GET | 统计数据 |
+| `/api/categories` | GET | 分类列表 |
+| `/api/search` | GET | 搜索文件 |
 
 ## Cron 表达式示例
 
@@ -90,46 +135,37 @@ profiles/
 - `0 9 * * 1-5` - 工作日每天 9 点
 - `*/30 * * * *` - 每 30 分钟
 
-## 配置说明
+## 开发
 
-### 配置文件位置
+### 前端开发
 
-- **默认存储目录**：`profiles/`（项目目录下）
-- **用户配置**：`profiles/config.json`
-- **默认配置模板**：`config.default.json`
-
-### 配置项说明
-
-```json
-{
-  "storagePath": "",
-  "scanPaths": ["D:\\NAS", "E:\\Media"],
-  "scanTime": "0 2 * * *",
-  "excludePatterns": ["$Recycle.Bin", ".git", "node_modules"],
-  "outputFile": "nas_scan.md"
-}
+```bash
+cd frontend
+npm install
+npm run dev    # 开发模式
+npm run build  # 构建生产版本
 ```
 
-**storagePath 说明**：
-- 留空：使用默认 `profiles/` 目录
-- 绝对路径：如 `D:\NAS_Data` 或 `/data/nas-index`
-- 相对路径：相对于项目目录，如 `./data`
+### 技术栈
 
-## API 端点
+**后端**:
+- Node.js + Express
+- sql.js (SQLite)
+- node-cron
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/config` | GET | 获取配置 |
-| `/api/config/full` | GET | 获取完整配置 |
-| `/api/config` | POST | 保存配置 |
-| `/api/storage/path` | GET | 获取存储路径信息 |
-| `/api/scan` | POST | 手动扫描 |
-| `/api/content/scan` | GET | 获取扫描内容 |
-| `/api/statistics` | GET | 获取统计数据（用于饼图） |
-| `/api/search?q=xxx` | GET | 搜索文件 |
-| `/api/status` | GET | 获取状态 |
+**前端**:
+- Vue 3
+- Vue Router
+- Vite
+
+## 版本历史
+
+- v1.0.2 - SQLite 数据库 + Vue 3 文件管理系统
+- v1.0.1 - 本地分类 + 统计饼图
+- v1.0.0 - 基础扫描 + Markdown 输出
 
 ## 注意事项
 
 - NAS 关机时扫描会跳过，不会报错
-- 文件搜索在本地进行，不依赖外部服务
+- 文件操作需要确保目标路径可访问
+- 大文件扫描可能耗时，建议使用定时扫描
