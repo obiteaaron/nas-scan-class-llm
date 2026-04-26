@@ -25,16 +25,16 @@
         <table class="table">
           <thead>
             <tr>
-              <th>文件名</th>
-              <th>路径</th>
-              <th>大小</th>
-              <th>分类</th>
-              <th>操作</th>
+              <th style="width: 30%">文件名</th>
+              <th style="width: 35%">路径</th>
+              <th style="width: 80px">大小</th>
+              <th style="width: 70px">分类</th>
+              <th style="width: 70px">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="file in results" :key="file.id">
-              <td>{{ file.name }}</td>
+              <td :title="file.name">{{ file.name }}</td>
               <td class="path-cell">{{ truncatePath(file.path) }}</td>
               <td>{{ file.sizeFormatted }}</td>
               <td>

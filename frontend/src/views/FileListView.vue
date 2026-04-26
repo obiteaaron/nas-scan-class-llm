@@ -50,12 +50,12 @@
               <th style="width: 30px">
                 <input type="checkbox" @change="toggleSelectAll($event)" :checked="isAllSelected">
               </th>
-              <th>文件名</th>
-              <th>大小</th>
-              <th>分类</th>
-              <th>标签</th>
-              <th>修改时间</th>
-              <th>操作</th>
+              <th style="width: 30%">文件名</th>
+              <th style="width: 80px">大小</th>
+              <th style="width: 70px">分类</th>
+              <th style="width: 20%">标签</th>
+              <th style="width: 100px">修改时间</th>
+              <th style="width: 230px">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -64,7 +64,7 @@
                 <input type="checkbox" :checked="selectedFiles.includes(file.id)" @change="toggleSelect(file.id)">
               </td>
               <td>
-                <span class="file-name" @click="showPreview(file)">{{ file.name }}</span>
+                <span class="file-name" :title="file.name" @click="showPreview(file)">{{ file.name }}</span>
               </td>
               <td>{{ file.sizeFormatted }}</td>
               <td>
@@ -518,6 +518,10 @@ export default {
 .file-name {
   cursor: pointer;
   color: var(--primary);
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .file-name:hover {
@@ -527,6 +531,12 @@ export default {
 .actions {
   display: flex;
   gap: 4px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.actions .btn {
+  flex-shrink: 0;
 }
 
 .file-tags {
